@@ -3,24 +3,34 @@
 LLM From Scratch — Command-line entry point.
 
 Commands:
-  python main.py info                        Print model architecture and param count
-  python main.py train [dataset] [n]         Train base model  (saves to checkpoints/base/)
-  python main.py train-rlhf                  DPO safety alignment  (saves to checkpoints/rlhf/)
-  python main.py train-adapter NAME [ds] [n] Train LoRA adapter  (saves to checkpoints/adapters/)
-  python main.py generate [--adapter NAME]   Generate text (loads RLHF ckpt or base if none)
-  python main.py serve [--adapter NAME]      Start FastAPI server on port 8001
-  python main.py test                        Run all unit tests
+  python main.py info                              Print model architecture and param count
+  python main.py train [dataset] [n] [--size S]   Train base model
+  python main.py train-rlhf [--size S]            DPO safety alignment
+  python main.py train-adapter NAME [ds] [n]      Train LoRA adapter
+  python main.py generate [--adapter NAME]        Generate text
+  python main.py serve [--adapter NAME]           Start FastAPI server on port 8001
+  python main.py test                             Run all unit tests
 
-Checkpoint layout:
-  checkpoints/base/model.pt           Base model (train large datasets here)
-  checkpoints/rlhf/model.pt           Base + DPO safety alignment
-  checkpoints/adapters/<name>.pt      LoRA adapter weights only (tiny files)
+Model sizes (--size flag):
+  --size small    13.6M  params  (default, CPU pe chalega)
+  --size medium   ~80M   params  (8GB RAM GPU chahiye)
+  --size large    ~288M  params  (12GB VRAM chahiye)
+  --size xlarge   ~500M  params  (Kaggle T4x2 / 24GB GPU)
+
+Checkpoint layout (size ke hisaab se alag folder):
+  checkpoints/small/base/model.pt
+  checkpoints/medium/base/model.pt
+  checkpoints/large/base/model.pt
+  checkpoints/xlarge/base/model.pt
 
 Typical pipeline:
-  1. python main.py train tinystories 5000     (base language model)
-  2. python main.py train-rlhf                 (safety alignment)
-  3. python main.py train-adapter customer_service tinystories 2000
-  4. python main.py generate --adapter customer_service
+  # Local (CPU):
+  python main.py train tinystories 5000 --size small
+  python main.py generate --size small
+
+  # Kaggle T4x2 (500M):
+  python main.py train --mix tinystories:5000 daily_dialog:3000 wikitext2:3000 --size xlarge
+  python main.py generate --size xlarge
 """
 
 import logging
@@ -37,9 +47,30 @@ logger = logging.getLogger("main")
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
-CKPT_BASE    = "checkpoints/base/model.pt"
-CKPT_RLHF    = "checkpoints/rlhf/model.pt"
-CKPT_ADAPTER = "checkpoints/adapters/{name}.pt"
+# Checkpoint paths — size ke hisaab se alag folder
+CKPT_BASE    = "checkpoints/{size}/base/model.pt"
+CKPT_RLHF    = "checkpoints/{size}/rlhf/model.pt"
+CKPT_ADAPTER = "checkpoints/{size}/adapters/{name}.pt"
+
+
+def _get_size() -> str:
+    """Parse --size flag from sys.argv. Default: small."""
+    if "--size" in sys.argv:
+        idx = sys.argv.index("--size")
+        if idx + 1 < len(sys.argv):
+            size = sys.argv[idx + 1].lower()
+            valid = {"small", "medium", "large", "xlarge", "500m"}
+            if size not in valid:
+                raise SystemExit(f"Unknown --size '{size}'. Choose: small, medium, large, xlarge")
+            return "xlarge" if size == "500m" else size
+    return "small"
+
+
+def _get_config(size: str):
+    """Return ModelConfig for given size string."""
+    from config.model_config import SMALL_CONFIG, MEDIUM_CONFIG, LARGE_CONFIG, XLARGE_CONFIG
+    return {"small": SMALL_CONFIG, "medium": MEDIUM_CONFIG,
+            "large": LARGE_CONFIG, "xlarge": XLARGE_CONFIG}[size]
 
 SAMPLE_TEXTS = [
     "The transformer architecture has revolutionized natural language processing.",
@@ -286,22 +317,27 @@ def _load_mixed_datasets(specs: list[str]) -> list[str]:
 
 # ── Helper: load base or RLHF checkpoint ─────────────────────────────────────
 
-def _load_model(prefer_rlhf: bool = True):
-    from config.model_config import SMALL_CONFIG
+def _load_model(prefer_rlhf: bool = True, size: str = None):
     from model.transformer import Transformer
 
-    model = Transformer(SMALL_CONFIG)
+    if size is None:
+        size = _get_size()
 
-    if prefer_rlhf and os.path.exists(CKPT_RLHF):
-        ckpt = torch.load(CKPT_RLHF, map_location=DEVICE)
+    config  = _get_config(size)
+    model   = Transformer(config)
+    ckpt_rlhf = CKPT_RLHF.format(size=size)
+    ckpt_base = CKPT_BASE.format(size=size)
+
+    if prefer_rlhf and os.path.exists(ckpt_rlhf):
+        ckpt = torch.load(ckpt_rlhf, map_location=DEVICE)
         model.load_state_dict(ckpt["model_state"])
-        logger.info("Loaded RLHF checkpoint.")
-    elif os.path.exists(CKPT_BASE):
-        ckpt = torch.load(CKPT_BASE, map_location=DEVICE)
+        logger.info(f"Loaded RLHF checkpoint ({size}).")
+    elif os.path.exists(ckpt_base):
+        ckpt = torch.load(ckpt_base, map_location=DEVICE)
         model.load_state_dict(ckpt["model_state"])
-        logger.info("Loaded base checkpoint.")
+        logger.info(f"Loaded base checkpoint ({size}).")
     else:
-        logger.warning("No checkpoint found — using random weights (output will be gibberish).")
+        logger.warning(f"No checkpoint found for size={size} — using random weights.")
 
     return model
 
@@ -344,85 +380,96 @@ def cmd_train():
       --fresh    Start from random weights (discard existing checkpoint)
                  Without --fresh, training continues from existing checkpoint.
     """
-    from config.model_config import SMALL_CONFIG
     from model.transformer import Transformer
     from tokenizer.bpe_tokenizer import BPETokenizer
     from training.dataset import TextDataset, make_dataloader
     from training.trainer import Trainer
 
+    size     = _get_size()
+    config   = _get_config(size)
     fresh    = "--fresh" in sys.argv
     mix_mode = "--mix"   in sys.argv
-    raw_args = [a for a in sys.argv[2:] if a not in ("--fresh", "--mix")]
+    raw_args = [a for a in sys.argv[2:] if a not in ("--fresh", "--mix", "--size") and a != size]
 
-    os.makedirs(os.path.dirname(CKPT_BASE), exist_ok=True)
+    ckpt_path = CKPT_BASE.format(size=size)
+    os.makedirs(os.path.dirname(ckpt_path), exist_ok=True)
 
     tokenizer = BPETokenizer()
-    model     = Transformer(SMALL_CONFIG)
+    model     = Transformer(config)
 
-    if not fresh and os.path.exists(CKPT_BASE):
-        ckpt = torch.load(CKPT_BASE, map_location=DEVICE)
+    if not fresh and os.path.exists(ckpt_path):
+        ckpt = torch.load(ckpt_path, map_location=DEVICE)
         model.load_state_dict(ckpt["model_state"])
-        logger.info("Existing checkpoint loaded — continuing training on top of previous weights.")
+        logger.info(f"Checkpoint loaded ({size}) — continuing training.")
     elif fresh:
-        logger.info("--fresh: starting from random weights (previous training discarded).")
+        logger.info(f"--fresh: starting from random weights ({size}).")
     else:
-        logger.info("No existing checkpoint — starting fresh.")
+        logger.info(f"No existing checkpoint ({size}) — starting fresh.")
 
-    logger.info(f"Device: {DEVICE}  |  Parameters: {model.param_count()}")
+    logger.info(f"Size: {size.upper()}  |  Device: {DEVICE}  |  Parameters: {model.param_count()}")
 
     # ── Load texts ────────────────────────────────────────────────────────────
     if mix_mode:
-        # --mix tinystories:3000 daily_dialog:2000 wikitext2:2000
-        if not raw_args:
+        mix_specs = [a for a in raw_args if not a.isdigit()]
+        if not mix_specs:
             raise SystemExit("--mix requires dataset specs, e.g.: --mix tinystories:3000 daily_dialog:2000")
-        texts = _load_mixed_datasets(raw_args)
+        texts = _load_mixed_datasets(mix_specs)
     elif raw_args:
         dataset_arg = raw_args[0]
         max_samples = int(raw_args[1]) if len(raw_args) > 1 else 5_000
         texts = _load_hf_texts(dataset_arg, max_samples=max_samples)
     else:
-        logger.info("No dataset specified — using built-in sample texts.")
+        logger.info("No dataset — using built-in sample texts.")
         texts = SAMPLE_TEXTS
 
     # ── Build dataset & loader ────────────────────────────────────────────────
-    dataset = TextDataset(texts, tokenizer, SMALL_CONFIG.max_seq_len)
+    dataset = TextDataset(texts, tokenizer, config.max_seq_len)
     if len(dataset) == 0:
         logger.warning("Dataset chunks empty — falling back to seq_len=32.")
-        from config.model_config import ModelConfig
-        cfg2    = SMALL_CONFIG.model_copy(update={"max_seq_len": 32})
+        cfg2    = config.model_copy(update={"max_seq_len": 32})
         dataset = TextDataset(texts, tokenizer, cfg2.max_seq_len)
 
+    # xlarge/large = bigger batch to use GPU better
+    batch_size = 4 if size in ("small", "medium") else 2
     epochs     = 3
-    batch_size = 4
     loader     = make_dataloader(dataset, batch_size=batch_size, shuffle=True)
     max_steps  = epochs * len(loader)
     warmup     = max(50, max_steps // 20)
 
     logger.info(
-        f"Dataset: {len(dataset)} chunks  |  Batches/epoch: {len(loader)}  "
-        f"|  Total steps: {max_steps}  |  Warmup: {warmup}"
+        f"Dataset: {len(dataset)} chunks  |  Batch: {batch_size}  |  "
+        f"Steps: {max_steps}  |  Warmup: {warmup}"
     )
 
     trainer = Trainer(model, loader, lr=3e-4, warmup_steps=warmup, max_steps=max_steps, device=DEVICE)
-    losses  = trainer.train(epochs=epochs, log_every=50, checkpoint_path=CKPT_BASE)
-    trainer.save(CKPT_BASE)
-    logger.info(f"Base training complete. Final loss: {losses[-1]:.4f}")
+    losses  = trainer.train(epochs=epochs, log_every=50, checkpoint_path=ckpt_path)
+    trainer.save(ckpt_path)
+    logger.info(f"Training complete ({size}). Final loss: {losses[-1]:.4f}")
 
 
 def cmd_train_rlhf():
     """
     DPO safety alignment on top of the base model.
-    Saves RLHF-aligned checkpoint to checkpoints/rlhf/model.pt
+    Saves RLHF-aligned checkpoint to checkpoints/{size}/rlhf/model.pt
 
     Usage:
-      python main.py train-rlhf               (uses built-in sample pairs)
-      python main.py train-rlhf pairs.json    (load JSON file with preference pairs)
+      python main.py train-rlhf                        (uses built-in sample pairs)
+      python main.py train-rlhf pairs.json             (load JSON file)
+      python main.py train-rlhf --size medium          (medium model)
     """
     import json
     from tokenizer.bpe_tokenizer import BPETokenizer
     from training.rlhf_trainer import DPOTrainer
 
-    pairs_arg = sys.argv[2] if len(sys.argv) > 2 else None
+    size      = _get_size()
+    ckpt_rlhf = CKPT_RLHF.format(size=size)
+
+    # Find pairs.json arg — skip flags
+    pairs_arg = None
+    for a in sys.argv[2:]:
+        if not a.startswith("--") and a not in (size,):
+            pairs_arg = a
+            break
 
     if pairs_arg:
         with open(pairs_arg) as f:
@@ -433,10 +480,11 @@ def cmd_train_rlhf():
         logger.info(f"Using {len(pairs)} built-in sample preference pairs.")
         logger.info("Tip: provide a JSON file for real RLHF alignment.")
 
-    model     = _load_model(prefer_rlhf=False)   # start from base
+    model     = _load_model(prefer_rlhf=False, size=size)   # start from base
     tokenizer = BPETokenizer()
 
-    os.makedirs(os.path.dirname(CKPT_RLHF), exist_ok=True)
+    os.makedirs(os.path.dirname(ckpt_rlhf), exist_ok=True)
+    logger.info(f"Size: {size.upper()}  |  RLHF checkpoint → {ckpt_rlhf}")
 
     trainer = DPOTrainer(
         model, tokenizer, pairs,
@@ -444,27 +492,31 @@ def cmd_train_rlhf():
         warmup_steps=10, max_steps=len(pairs) * 3,
         batch_size=2, max_len=128, device=DEVICE,
     )
-    losses = trainer.train(epochs=3, log_every=5, checkpoint_path=CKPT_RLHF)
-    logger.info(f"RLHF training complete. Final loss: {losses[-1]:.4f}")
+    losses = trainer.train(epochs=3, log_every=5, checkpoint_path=ckpt_rlhf)
+    logger.info(f"RLHF training complete ({size}). Final loss: {losses[-1]:.4f}")
 
 
 def cmd_train_adapter():
     """
     Train a LoRA adapter on top of the base/RLHF model.
-    Saves only the adapter weights (tiny file) to checkpoints/adapters/<name>.pt
+    Saves only the adapter weights (tiny file) to checkpoints/{size}/adapters/<name>.pt
 
     Usage:
       python main.py train-adapter customer_service tinystories 2000
-      python main.py train-adapter qa_bot wikitext2 3000
+      python main.py train-adapter qa_bot wikitext2 3000 --size medium
     """
-    if len(sys.argv) < 3:
-        print("Usage: python main.py train-adapter <name> [dataset] [max_samples]")
+    # Collect positional args, skipping --size and its value
+    size     = _get_size()
+    pos_args = [a for a in sys.argv[2:] if not a.startswith("--") and a != size]
+
+    if not pos_args:
+        print("Usage: python main.py train-adapter <name> [dataset] [max_samples] [--size S]")
         sys.exit(1)
 
-    adapter_name = sys.argv[2]
-    dataset_arg  = sys.argv[3] if len(sys.argv) > 3 else None
-    max_samples  = int(sys.argv[4]) if len(sys.argv) > 4 else 2_000
-    adapter_path = CKPT_ADAPTER.format(name=adapter_name)
+    adapter_name = pos_args[0]
+    dataset_arg  = pos_args[1] if len(pos_args) > 1 else None
+    max_samples  = int(pos_args[2]) if len(pos_args) > 2 else 2_000
+    adapter_path = CKPT_ADAPTER.format(size=size, name=adapter_name)
 
     from tokenizer.bpe_tokenizer import BPETokenizer
     from training.dataset import TextDataset, make_dataloader
@@ -473,8 +525,9 @@ def cmd_train_adapter():
 
     os.makedirs(os.path.dirname(adapter_path), exist_ok=True)
 
-    model     = _load_model(prefer_rlhf=True)   # build on RLHF or base
+    model     = _load_model(prefer_rlhf=True, size=size)   # build on RLHF or base
     tokenizer = BPETokenizer()
+    config    = _get_config(size)
 
     manager = LoRAManager(rank=8, alpha=16.0)
     manager.inject(model)
@@ -486,27 +539,25 @@ def cmd_train_adapter():
         logger.info("No dataset specified — using built-in sample texts.")
         texts = SAMPLE_TEXTS
 
-    from config.model_config import SMALL_CONFIG
-    dataset = TextDataset(texts, tokenizer, SMALL_CONFIG.max_seq_len)
+    dataset = TextDataset(texts, tokenizer, config.max_seq_len)
     if len(dataset) == 0:
-        from config.model_config import ModelConfig
-        cfg2    = SMALL_CONFIG.model_copy(update={"max_seq_len": 32})
+        cfg2    = config.model_copy(update={"max_seq_len": 32})
         dataset = TextDataset(texts, tokenizer, cfg2.max_seq_len)
 
     epochs     = 3
-    batch_size = 4
+    batch_size = 4 if size in ("small", "medium") else 2
     loader     = make_dataloader(dataset, batch_size=batch_size, shuffle=True)
     max_steps  = epochs * len(loader)
     warmup     = max(20, max_steps // 20)
 
-    logger.info(f"Training adapter '{adapter_name}'  ({len(dataset)} chunks, {max_steps} steps)")
+    logger.info(f"Training adapter '{adapter_name}' ({size})  |  {len(dataset)} chunks, {max_steps} steps")
 
     trainer = LoRATrainer(
         model, loader, manager,
         lr=1e-4, warmup_steps=warmup, max_steps=max_steps, device=DEVICE,
     )
     losses = trainer.train(epochs=epochs, log_every=50, adapter_path=adapter_path)
-    logger.info(f"Adapter training complete. Final loss: {losses[-1]:.4f}")
+    logger.info(f"Adapter training complete ({size}). Final loss: {losses[-1]:.4f}")
     logger.info(f"Adapter saved → {adapter_path}")
 
 
@@ -515,25 +566,25 @@ def cmd_generate():
     from model.lora_manager import LoRAManager
     from inference.generator import Generator
 
-    # python main.py generate [--adapter NAME]
+    size         = _get_size()
     adapter_name = None
     if "--adapter" in sys.argv:
         idx = sys.argv.index("--adapter")
         if idx + 1 < len(sys.argv):
             adapter_name = sys.argv[idx + 1]
 
-    model     = _load_model(prefer_rlhf=True)
+    model     = _load_model(prefer_rlhf=True, size=size)
     tokenizer = BPETokenizer()
 
     if adapter_name:
-        adapter_path = CKPT_ADAPTER.format(name=adapter_name)
+        adapter_path = CKPT_ADAPTER.format(size=size, name=adapter_name)
         if os.path.exists(adapter_path):
             manager = LoRAManager(rank=8, alpha=16.0)
             manager.inject(model)
             manager.load_adapter(model, adapter_path)
             logger.info(f"Loaded adapter '{adapter_name}'.")
         else:
-            logger.warning(f"Adapter '{adapter_name}' not found at {adapter_path}. Using base model.")
+            logger.warning(f"Adapter '{adapter_name}' not found. Using base model.")
 
     gen = Generator(model, tokenizer, device=DEVICE)
 
@@ -572,29 +623,30 @@ def cmd_serve():
     from inference.generator import Generator
     from serving.api import app, setup
 
-    # python main.py serve [--adapter NAME]
+    size         = _get_size()
     adapter_name = None
     if "--adapter" in sys.argv:
         idx = sys.argv.index("--adapter")
         if idx + 1 < len(sys.argv):
             adapter_name = sys.argv[idx + 1]
 
-    model     = _load_model(prefer_rlhf=True)
+    model     = _load_model(prefer_rlhf=True, size=size)
     tokenizer = BPETokenizer()
 
     if adapter_name:
-        adapter_path = CKPT_ADAPTER.format(name=adapter_name)
+        adapter_path = CKPT_ADAPTER.format(size=size, name=adapter_name)
         if os.path.exists(adapter_path):
             manager = LoRAManager(rank=8, alpha=16.0)
             manager.inject(model)
             manager.load_adapter(model, adapter_path)
-            logger.info(f"Loaded adapter '{adapter_name}' for serving.")
+            logger.info(f"Loaded adapter '{adapter_name}' ({size}) for serving.")
         else:
-            logger.warning(f"Adapter '{adapter_name}' not found. Serving without adapter.")
+            logger.warning(f"Adapter '{adapter_name}' ({size}) not found. Serving without adapter.")
 
     gen = Generator(model, tokenizer, device=DEVICE)
     setup(model, gen)
 
+    logger.info(f"Model size: {size.upper()}  |  Adapter: {adapter_name or 'none'}")
     logger.info("Starting server on http://localhost:8001  |  Docs: http://localhost:8001/docs")
     uvicorn.run(app, host="0.0.0.0", port=8001, log_level="info")
 

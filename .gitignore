@@ -1,7 +1,11 @@
-checkpoints/
 __pycache__/
 *.pyc
 *.pyo
 .env
 *.pt
 *.pth
+
+# Keep folder structure but ignore model weights
+checkpoints/**/*.pt
+checkpoints/**/*.pth
+!checkpoints/**/.gitkeep
