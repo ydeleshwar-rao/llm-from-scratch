@@ -147,20 +147,31 @@ def _load_hf_texts(dataset_name: str, max_samples: int = 10_000) -> list[str]:
     # (hf_name, split, text_field, extra_kwargs, min_char_len)
     PRESETS: dict = {
         # ── General language / grammar ─────────────────────────────────────────
-        "tinystories":          ("roneneldan/TinyStories",           "train", "text",     {},                              50),
-        "wikitext2":            ("Salesforce/wikitext",              "train", "text",     {"name": "wikitext-2-raw-v1"},   80),
-        "wikitext103":          ("Salesforce/wikitext",              "train", "text",     {"name": "wikitext-103-raw-v1"}, 80),
-        "openwebtext":          ("Skylion007/openwebtext",           "train", "text",     {},                              80),
-        "ptb":                  ("ptb_text_only",                    "train", "sentence", {},                              20),
-        "gutenberg":            ("sedthh/gutenberg_english",         "train", "TEXT",     {},                             100),
+        "tinystories":          ("roneneldan/TinyStories",                          "train", "text",     {},                              50),
+        "wikitext2":            ("Salesforce/wikitext",                             "train", "text",     {"name": "wikitext-2-raw-v1"},   80),
+        "wikitext103":          ("Salesforce/wikitext",                             "train", "text",     {"name": "wikitext-103-raw-v1"}, 80),
+        "openwebtext":          ("Skylion007/openwebtext",                          "train", "text",     {},                              80),
+        "ptb":                  ("ptb_text_only",                                   "train", "sentence", {},                              20),
+        "gutenberg":            ("sedthh/gutenberg_english",                        "train", "TEXT",     {},                             100),
+        # ── Emotions ──────────────────────────────────────────────────────────
+        "emotion":              ("dair-ai/emotion",                                 "train", "text",     {},                              10),
+        # ── Social / human behavior ───────────────────────────────────────────
+        "social_iqa":           ("allenai/social_i_qa",                             "train", "context",  {},                              20),
+        # ── Customer service ──────────────────────────────────────────────────
+        "customer_support":     ("strova-ai/customer_support_conversations_dataset","train", "message",  {},                              20),
+        # ── Sales ─────────────────────────────────────────────────────────────
+        "sales":                ("DeepMostInnovations/saas-sales-conversations",    "train", "full_text", {},                              50),
         # ── Conversation / dialogue ────────────────────────────────────────────
         "daily_dialog":         None,   # special: multi-turn dialogue → flattened
         "empathetic_dialogues": None,   # special: emotion-aware dialogue
         "blended_skill_talk":   None,   # special: persona + empathy + knowledge
+        "hindi":                None,   # special: Hindi text from IITB corpus
         # ── Curated mixes ─────────────────────────────────────────────────────
         "grammar-mix":          None,   # ptb + wikitext2 + gutenberg
         "conversation-mix":     None,   # daily_dialog + empathetic_dialogues
         "full-mix":             None,   # tinystories + wikitext2 + daily_dialog + empathetic
+        "human-mix":            None,   # emotion + social_iqa + customer_support + sales + daily_dialog
+        "hindi-mix":            None,   # hindi + wikitext2 + daily_dialog
     }
 
     if dataset_name not in PRESETS:
@@ -249,6 +260,51 @@ def _load_hf_texts(dataset_name: str, max_samples: int = 10_000) -> list[str]:
             if len(convo) >= 60:
                 texts.append(convo)
         logger.info(f"Loaded {len(texts):,} conversations from empathetic_dialogues")
+        return texts
+
+    if dataset_name == "hindi":
+        logger.info("Downloading Hindi text (IITB English-Hindi corpus)…")
+        ds = load_dataset("cfilt/iitb-english-hindi", split="train", streaming=True)
+        texts = []
+        for row in ds:
+            hi = row.get("translation", {}).get("hi", "").strip()
+            if len(hi) >= 20:
+                texts.append(hi)
+            if len(texts) >= max_samples:
+                break
+        logger.info(f"Loaded {len(texts):,} Hindi sentences")
+        return texts
+
+    if dataset_name == "human-mix":
+        import random
+        logger.info("Loading human-mix (emotion + social + customer + sales + daily_dialog)…")
+        texts = []
+        per = max_samples // 5
+        for src in ("emotion", "social_iqa", "customer_support", "sales", "daily_dialog"):
+            try:
+                t = _load_hf_texts(src, max_samples=per)
+                texts.extend(t)
+                logger.info(f"  {src}: {len(t):,}")
+            except Exception as e:
+                logger.warning(f"  {src} failed ({e}), skipping")
+        random.shuffle(texts)
+        logger.info(f"human-mix total: {len(texts):,} texts")
+        return texts
+
+    if dataset_name == "hindi-mix":
+        import random
+        logger.info("Loading hindi-mix (Hindi + wikitext2 + daily_dialog)…")
+        texts = []
+        per = max_samples // 3
+        for src in ("hindi", "wikitext2", "daily_dialog"):
+            try:
+                t = _load_hf_texts(src, max_samples=per)
+                texts.extend(t)
+                logger.info(f"  {src}: {len(t):,}")
+            except Exception as e:
+                logger.warning(f"  {src} failed ({e}), skipping")
+        random.shuffle(texts)
+        logger.info(f"hindi-mix total: {len(texts):,} texts")
         return texts
 
     if dataset_name == "blended_skill_talk":
