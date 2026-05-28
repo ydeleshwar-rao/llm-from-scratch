@@ -147,20 +147,27 @@ def _load_hf_texts(dataset_name: str, max_samples: int = 10_000) -> list[str]:
     # (hf_name, split, text_field, extra_kwargs, min_char_len)
     PRESETS: dict = {
         # ── General language / grammar ─────────────────────────────────────────
-        "tinystories":          ("roneneldan/TinyStories",                          "train", "text",     {},                              50),
-        "wikitext2":            ("Salesforce/wikitext",                             "train", "text",     {"name": "wikitext-2-raw-v1"},   80),
-        "wikitext103":          ("Salesforce/wikitext",                             "train", "text",     {"name": "wikitext-103-raw-v1"}, 80),
-        "openwebtext":          ("Skylion007/openwebtext",                          "train", "text",     {},                              80),
-        "ptb":                  ("ptb_text_only",                                   "train", "sentence", {},                              20),
-        "gutenberg":            ("sedthh/gutenberg_english",                        "train", "TEXT",     {},                             100),
+        "wikitext2":            ("Salesforce/wikitext",                                       "train", "text",       {"name": "wikitext-2-raw-v1"},   80),
+        "wikitext103":          ("Salesforce/wikitext",                                       "train", "text",       {"name": "wikitext-103-raw-v1"}, 80),
+        "openwebtext":          ("Skylion007/openwebtext",                                    "train", "text",       {},                              80),
+        "ptb":                  ("ptb_text_only",                                             "train", "sentence",   {},                              20),
+        "gutenberg":            ("sedthh/gutenberg_english",                                  "train", "TEXT",       {},                             100),
         # ── Emotions ──────────────────────────────────────────────────────────
-        "emotion":              ("dair-ai/emotion",                                 "train", "text",     {},                              10),
+        "emotion":              ("dair-ai/emotion",                                           "train", "text",       {},                              10),
         # ── Social / human behavior ───────────────────────────────────────────
-        "social_iqa":           ("allenai/social_i_qa",                             "train", "context",  {},                              20),
+        "social_iqa":           ("allenai/social_i_qa",                                       "train", "context",    {},                              20),
         # ── Customer service ──────────────────────────────────────────────────
-        "customer_support":     ("strova-ai/customer_support_conversations_dataset","train", "message",  {},                              20),
+        "customer_support":     ("strova-ai/customer_support_conversations_dataset",          "train", "message",    {},                              20),
         # ── Sales ─────────────────────────────────────────────────────────────
-        "sales":                ("DeepMostInnovations/saas-sales-conversations",    "train", "full_text", {},                              50),
+        "sales":                ("DeepMostInnovations/saas-sales-conversations",              "train", "full_text",   {},                              50),
+        # ── Abuse / hate speech (for recognition & filtering) ─────────────────
+        "hate_speech":          ("tdavidson/hate_speech_offensive",                           "train", "tweet",       {},                              10),
+        "hate_speech_hindi":    ("manueltonneau/india-hate-speech-superset",                  "train", "text",        {},                              10),
+        # ── Sexual health & medical education ─────────────────────────────────
+        "sexual_health":        ("lavita/ChatDoctor-HealthCareMagic-100k",                    "train", "input",       {},                              30),
+        "medical_qa":           ("medalpaca/medical_meadow_wikidoc_patient_information",      "train", "output",      {},                              30),
+        # ── Non-violent / prosocial behaviour ─────────────────────────────────
+        "prosocial":            ("allenai/prosocial-dialog",                                  "train", "response",    {},                              20),
         # ── Conversation / dialogue ────────────────────────────────────────────
         "daily_dialog":         None,   # special: multi-turn dialogue → flattened
         "empathetic_dialogues": None,   # special: emotion-aware dialogue
@@ -169,9 +176,11 @@ def _load_hf_texts(dataset_name: str, max_samples: int = 10_000) -> list[str]:
         # ── Curated mixes ─────────────────────────────────────────────────────
         "grammar-mix":          None,   # ptb + wikitext2 + gutenberg
         "conversation-mix":     None,   # daily_dialog + empathetic_dialogues
-        "full-mix":             None,   # tinystories + wikitext2 + daily_dialog + empathetic
-        "human-mix":            None,   # emotion + social_iqa + customer_support + sales + daily_dialog
+        "full-mix":             None,   # wikitext2 + daily_dialog + empathetic
+        "human-mix":            None,   # emotion + social + customer + sales + daily_dialog
         "hindi-mix":            None,   # hindi + wikitext2 + daily_dialog
+        "safety-mix":           None,   # hate_speech + sexual_health + prosocial + empathetic
+        "complete-mix":         None,   # sab kuch ek saath
     }
 
     if dataset_name not in PRESETS:
@@ -210,10 +219,10 @@ def _load_hf_texts(dataset_name: str, max_samples: int = 10_000) -> list[str]:
 
     if dataset_name == "full-mix":
         import random
-        logger.info("Loading full-mix (TinyStories + WikiText2 + DailyDialog + EmpathyDialogues)…")
+        logger.info("Loading full-mix (WikiText2 + DailyDialog + EmpathyDialogues + Emotion)…")
         texts = []
         per = max_samples // 4
-        for src in ("tinystories", "wikitext2", "daily_dialog", "empathetic_dialogues"):
+        for src in ("wikitext2", "daily_dialog", "empathetic_dialogues", "emotion"):
             try:
                 texts.extend(_load_hf_texts(src, max_samples=per))
                 logger.info(f"  {src}: {per} samples")
@@ -289,6 +298,49 @@ def _load_hf_texts(dataset_name: str, max_samples: int = 10_000) -> list[str]:
                 logger.warning(f"  {src} failed ({e}), skipping")
         random.shuffle(texts)
         logger.info(f"human-mix total: {len(texts):,} texts")
+        return texts
+
+    if dataset_name == "safety-mix":
+        import random
+        logger.info("Loading safety-mix (hate_speech + sexual_health + prosocial + empathetic)…")
+        texts = []
+        per = max_samples // 4
+        for src in ("hate_speech", "sexual_health", "prosocial", "empathetic_dialogues"):
+            try:
+                t = _load_hf_texts(src, max_samples=per)
+                texts.extend(t)
+                logger.info(f"  {src}: {len(t):,}")
+            except Exception as e:
+                logger.warning(f"  {src} failed ({e}), skipping")
+        random.shuffle(texts)
+        logger.info(f"safety-mix total: {len(texts):,} texts")
+        return texts
+
+    if dataset_name == "complete-mix":
+        import random
+        logger.info("Loading complete-mix (sab kuch — grammar + human + safety + hindi)…")
+        texts = []
+        sources = [
+            ("wikitext103",       max_samples // 8),
+            ("emotion",           max_samples // 8),
+            ("social_iqa",        max_samples // 8),
+            ("customer_support",  max_samples // 8),
+            ("sales",             max_samples // 8),
+            ("daily_dialog",      max_samples // 8),
+            ("hate_speech",       max_samples // 10),
+            ("sexual_health",     max_samples // 10),
+            ("prosocial",         max_samples // 10),
+            ("hindi",             max_samples // 10),
+        ]
+        for src, n in sources:
+            try:
+                t = _load_hf_texts(src, max_samples=n)
+                texts.extend(t)
+                logger.info(f"  {src}: {len(t):,}")
+            except Exception as e:
+                logger.warning(f"  {src} failed ({e}), skipping")
+        random.shuffle(texts)
+        logger.info(f"complete-mix total: {len(texts):,} texts")
         return texts
 
     if dataset_name == "hindi-mix":

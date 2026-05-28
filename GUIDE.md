@@ -254,14 +254,56 @@ safe = is_safe("bomb attack weapon")      # → False
 
 ## Available Datasets (HuggingFace)
 
+### Grammar & Language
+
 | Dataset | Content | Best for |
 |---------|---------|----------|
-| `tinystories` | Children's stories (simple, clean English) | Base model (shuru karo yahan se) |
 | `wikitext2` | Wikipedia articles | Grammar + factual knowledge |
 | `wikitext103` | Larger Wikipedia dump | Better grammar |
 | `grammar-mix` | PTB + WikiText-2 + Gutenberg | Sabse strong grammar base |
-| `ptb` | Penn Treebank sentences | Grammar research |
+| `ptb` | Penn Treebank sentences | Grammar |
 | `gutenberg` | Classic English literature | Rich vocabulary |
+| `openwebtext` | Web articles | Natural web writing style |
+
+### Human Knowledge & Conversations
+
+| Dataset | Content | Best for |
+|---------|---------|----------|
+| `emotion` | 400K emotional sentences (joy/anger/sadness/fear/love) | Emotions samajhna |
+| `social_iqa` | 37K social situations Q&A | Human behaviour, male/female interactions |
+| `daily_dialog` | Daily conversations | Roz ki baatein |
+| `empathetic_dialogues` | Emotion-aware conversations | Empathy seekhna |
+| `customer_support` | Customer service conversations | Customer handling |
+| `sales` | 100K sales conversations | Sales + persuasion |
+| `blended_skill_talk` | Persona + empathy + knowledge dialogues | Multi-skill conversation |
+
+### Safety & Awareness
+
+| Dataset | Content | Best for |
+|---------|---------|----------|
+| `hate_speech` | 24K abusive/hate tweets (English) | Abuse words pehchanna |
+| `hate_speech_hindi` | Hindi hate speech examples | Hindi abusive words pehchanna |
+| `sexual_health` | 100K doctor-patient health conversations | Sexual health education (medical) |
+| `medical_qa` | Medical Q&A patient information | Health knowledge |
+| `prosocial` | 58K prosocial dialogue examples | Non-violent behaviour, conflict resolution |
+
+### Hindi
+
+| Dataset | Content | Best for |
+|---------|---------|----------|
+| `hindi` | 16 lakh Hindi sentences (IITB corpus) | Hindi grammar + vocabulary |
+| `hindi-mix` | Hindi + WikiText2 + DailyDialog | Hindi + English together |
+
+### Curated Mixes (Recommended)
+
+| Mix | Kya kya hai andar | Use case |
+|-----|-------------------|----------|
+| `human-mix` | emotion + social + customer + sales + daily_dialog | Insaan jaisi baatein |
+| `safety-mix` | hate_speech + sexual_health + prosocial + empathetic | Safety awareness |
+| `grammar-mix` | PTB + WikiText2 + Gutenberg | Grammar |
+| `conversation-mix` | DailyDialog + EmpathyDialogues | Conversations |
+| `full-mix` | WikiText2 + DailyDialog + Emotion + Empathetic | General purpose |
+| `complete-mix` | **Sab kuch ek saath** | Best overall training |
 
 Pehli baar download hoga (few minutes). Baad mein cache mein hoga.
 
