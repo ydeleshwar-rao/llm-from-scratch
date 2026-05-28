@@ -1,0 +1,21 @@
+# ─── Neural network core ─────────────────────────────────────────────────────
+torch>=2.0.0              # tensor ops + autograd (CPU/CUDA)
+numpy>=1.24.0
+
+# ─── Tokenizer ───────────────────────────────────────────────────────────────
+tiktoken==0.8.0           # BPE tokenizer (same as project ai-service)
+
+# ─── Config + validation ─────────────────────────────────────────────────────
+pydantic==2.9.2           # same as project ai-service
+
+# ─── Serving ─────────────────────────────────────────────────────────────────
+fastapi==0.115.0          # same as project ai-service
+uvicorn[standard]==0.30.6
+
+# ─── Utils ───────────────────────────────────────────────────────────────────
+python-dotenv==1.0.1
+tenacity==9.0.0           # same as project ai-service
+
+# ─── Testing ─────────────────────────────────────────────────────────────────
+pytest>=7.0.0
+pytest-asyncio>=0.21.0
