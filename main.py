@@ -537,8 +537,7 @@ def cmd_train():
         cfg2    = config.model_copy(update={"max_seq_len": 32})
         dataset = TextDataset(texts, tokenizer, cfg2.max_seq_len)
 
-    # xlarge/large = bigger batch to use GPU better
-    batch_size = 4 if size in ("small", "medium") else 2
+    batch_size = 4 if size in ("small", "medium") else (2 if size == "large" else 1)
     epochs     = 3
     loader     = make_dataloader(dataset, batch_size=batch_size, shuffle=True)
     max_steps  = epochs * len(loader)

@@ -73,7 +73,7 @@ LARGE_CONFIG = ModelConfig(
 # ~500M parameters — needs serious GPU (A100 / H100 recommended)
 XLARGE_CONFIG = ModelConfig(
     vocab_size=100277,
-    max_seq_len=4096,
+    max_seq_len=1024,   # 4096→1024: attention memory 16x kam (T4 ke liye)
     d_model=1024,
     n_layers=36,
     n_heads=16,
