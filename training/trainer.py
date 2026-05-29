@@ -80,9 +80,23 @@ class Trainer:
 
         self.model = model.to(device)
 
-        self.optimizer = torch.optim.AdamW(
-            model.parameters(), lr=lr, weight_decay=0.1, betas=(0.9, 0.95)
-        )
+        # Use 8-bit Adam on CUDA (4x less optimizer memory: 4GB → 1GB for 500M model)
+        if device == "cuda":
+            try:
+                import bitsandbytes as bnb
+                self.optimizer = bnb.optim.AdamW8bit(
+                    model.parameters(), lr=lr, weight_decay=0.1, betas=(0.9, 0.95)
+                )
+                logger.info("8-bit AdamW: ON — optimizer memory ~4x kam hogi")
+            except ImportError:
+                self.optimizer = torch.optim.AdamW(
+                    model.parameters(), lr=lr, weight_decay=0.1, betas=(0.9, 0.95)
+                )
+                logger.info("bitsandbytes nahi mila — standard AdamW use ho raha hai")
+        else:
+            self.optimizer = torch.optim.AdamW(
+                model.parameters(), lr=lr, weight_decay=0.1, betas=(0.9, 0.95)
+            )
         self.scheduler = CosineWithWarmup(self.optimizer, warmup_steps, max_steps)
         self.criterion = nn.CrossEntropyLoss(ignore_index=-1)
 

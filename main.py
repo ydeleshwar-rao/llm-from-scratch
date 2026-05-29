@@ -588,6 +588,14 @@ def cmd_train():
 
     logger.info(f"Size: {size.upper()}  |  Device: {DEVICE}  |  Parameters: {model.param_count()}")
 
+    # GPU memory clean karo — checkpoint load ke baad cached tensors hate hain
+    if DEVICE == "cuda":
+        import gc
+        gc.collect()
+        torch.cuda.empty_cache()
+        free = torch.cuda.get_device_properties(0).total_memory - torch.cuda.memory_allocated()
+        logger.info(f"GPU free memory after load: {free / 1e9:.2f} GB")
+
     # ── Load texts ────────────────────────────────────────────────────────────
     if mix_mode:
         mix_specs = [a for a in raw_args if not a.isdigit()]
