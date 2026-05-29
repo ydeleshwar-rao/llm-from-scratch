@@ -207,6 +207,9 @@ def _load_hf_texts(dataset_name: str, max_samples: int = 10_000) -> list[str]:
         "grammar_correction":   ("agentlans/grammar-correction",                              "train", "output",      {},                              10),
         "noisy_english":        ("stanfordnlp/sentiment140",                                  "train", "text",        {},                              20),
         "medit":                ("grammarly/medit",                                           "train", "tgt",         {},                              10),
+        # ── Instruction following (greeting/conversation/QA) ──────────────────
+        "alpaca":               ("tatsu-lab/alpaca",                                          "train", "output",      {},                              10),
+        "openhermes":           ("teknium/OpenHermes-2.5",                                    "train", "conversations", {},                              10),
         # ── Conversation / dialogue ────────────────────────────────────────────
         "daily_dialog":         None,   # special: multi-turn dialogue → flattened
         "empathetic_dialogues": None,   # special: emotion-aware dialogue
@@ -311,6 +314,52 @@ def _load_hf_texts(dataset_name: str, max_samples: int = 10_000) -> list[str]:
         logger.info(f"Loaded {len(texts):,} conversations from empathetic_dialogues")
         return texts
 
+    if dataset_name == "alpaca":
+        logger.info("Downloading Alpaca instruction dataset…")
+        ds = load_dataset("tatsu-lab/alpaca", split="train", streaming=True)
+        texts = []
+        for row in ds:
+            instruction = row.get("instruction", "").strip()
+            inp         = row.get("input", "").strip()
+            output      = row.get("output", "").strip()
+            if not instruction or not output:
+                continue
+            # Format as conversation
+            if inp:
+                text = f"User: {instruction}\n{inp}\nAssistant: {output}"
+            else:
+                text = f"User: {instruction}\nAssistant: {output}"
+            if len(text) >= 30:
+                texts.append(text)
+            if len(texts) >= max_samples:
+                break
+        logger.info(f"Loaded {len(texts):,} instruction pairs from alpaca")
+        return texts
+
+    if dataset_name == "openhermes":
+        logger.info("Downloading OpenHermes conversations…")
+        ds = load_dataset("teknium/OpenHermes-2.5", split="train", streaming=True)
+        texts = []
+        for row in ds:
+            convs = row.get("conversations", [])
+            if not convs:
+                continue
+            parts = []
+            for turn in convs:
+                role  = turn.get("from", "")
+                value = turn.get("value", "").strip()
+                if role == "human":
+                    parts.append(f"User: {value}")
+                elif role == "gpt":
+                    parts.append(f"Assistant: {value}")
+            text = "\n".join(parts)
+            if len(text) >= 50:
+                texts.append(text)
+            if len(texts) >= max_samples:
+                break
+        logger.info(f"Loaded {len(texts):,} conversations from openhermes")
+        return texts
+
     if dataset_name == "hindi":
         logger.info("Downloading Hindi text (IITB English-Hindi corpus)…")
         ds = load_dataset("cfilt/iitb-english-hindi", split="train", streaming=True)
@@ -387,8 +436,9 @@ def _load_hf_texts(dataset_name: str, max_samples: int = 10_000) -> list[str]:
             ("sexual_health",      max_samples // 12),
             ("prosocial",          max_samples // 12),
             ("hindi",              max_samples // 12),
-            ("spell_correction",   max_samples // 12),
-            ("grammar_correction", max_samples // 12),
+            ("spell_correction",   max_samples // 14),
+            ("grammar_correction", max_samples // 14),
+            ("alpaca",             max_samples // 10),   # instruction following
         ]
         for src, n in sources:
             try:
