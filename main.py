@@ -72,6 +72,40 @@ def _get_config(size: str):
     return {"small": SMALL_CONFIG, "medium": MEDIUM_CONFIG,
             "large": LARGE_CONFIG, "xlarge": XLARGE_CONFIG}[size]
 
+
+def _get_hf_credentials():
+    """Parse --hf-repo and HF_TOKEN from args/env. Returns (repo, token) or (None, None)."""
+    repo  = None
+    token = os.environ.get("HF_TOKEN", None)
+    if "--hf-repo" in sys.argv:
+        idx = sys.argv.index("--hf-repo")
+        if idx + 1 < len(sys.argv):
+            repo = sys.argv[idx + 1]
+    return repo, token
+
+
+def _download_from_hub(hf_repo: str, hf_token: str, local_path: str):
+    """Download model.pt from HuggingFace Hub to local_path if it exists."""
+    try:
+        from huggingface_hub import hf_hub_download
+        logger.info(f"HF Hub se checkpoint download kar raha hoon: {hf_repo}")
+        downloaded = hf_hub_download(
+            repo_id=hf_repo,
+            filename="model.pt",
+            repo_type="model",
+            token=hf_token,
+            local_dir=os.path.dirname(local_path),
+        )
+        # Move to expected path if needed
+        if downloaded != local_path:
+            import shutil
+            shutil.move(downloaded, local_path)
+        logger.info(f"HF Hub checkpoint download ho gaya → {local_path}")
+        return True
+    except Exception as e:
+        logger.info(f"HF Hub pe koi checkpoint nahi mila ({e}) — fresh start.")
+        return False
+
 SAMPLE_TEXTS = [
     "The transformer architecture has revolutionized natural language processing.",
     "Attention mechanisms allow models to focus on the most relevant parts of the input.",
@@ -517,11 +551,17 @@ def cmd_train():
     from training.dataset import TextDataset, make_dataloader
     from training.trainer import Trainer
 
-    size     = _get_size()
-    config   = _get_config(size)
-    fresh    = "--fresh" in sys.argv
-    mix_mode = "--mix"   in sys.argv
-    raw_args = [a for a in sys.argv[2:] if a not in ("--fresh", "--mix", "--size") and a != size]
+    size          = _get_size()
+    config        = _get_config(size)
+    fresh         = "--fresh" in sys.argv
+    mix_mode      = "--mix"   in sys.argv
+    hf_repo, hf_token = _get_hf_credentials()
+    skip_flags    = {"--fresh", "--mix", "--size", "--hf-repo"}
+    raw_args = [
+        a for i, a in enumerate(sys.argv[2:], 2)
+        if a not in skip_flags and a != size
+        and not (i > 2 and sys.argv[i-1] in ("--size", "--hf-repo"))
+    ]
 
     ckpt_path = CKPT_BASE.format(size=size)
     os.makedirs(os.path.dirname(ckpt_path), exist_ok=True)
@@ -529,14 +569,22 @@ def cmd_train():
     tokenizer = BPETokenizer()
     model     = Transformer(config)
 
-    if not fresh and os.path.exists(ckpt_path):
+    if fresh:
+        logger.info(f"--fresh: starting from random weights ({size}).")
+    elif os.path.exists(ckpt_path):
         ckpt = torch.load(ckpt_path, map_location=DEVICE)
         model.load_state_dict(ckpt["model_state"])
-        logger.info(f"Checkpoint loaded ({size}) — continuing training.")
-    elif fresh:
-        logger.info(f"--fresh: starting from random weights ({size}).")
+        logger.info(f"Local checkpoint loaded ({size}) — continuing training.")
+    elif hf_repo and hf_token:
+        # Try downloading from HuggingFace Hub
+        if _download_from_hub(hf_repo, hf_token, ckpt_path):
+            ckpt = torch.load(ckpt_path, map_location=DEVICE)
+            model.load_state_dict(ckpt["model_state"])
+            logger.info(f"HF Hub checkpoint loaded ({size}) — continuing training.")
+        else:
+            logger.info(f"Starting fresh ({size}).")
     else:
-        logger.info(f"No existing checkpoint ({size}) — starting fresh.")
+        logger.info(f"No checkpoint found ({size}) — starting fresh.")
 
     logger.info(f"Size: {size.upper()}  |  Device: {DEVICE}  |  Parameters: {model.param_count()}")
 
@@ -572,9 +620,17 @@ def cmd_train():
         f"Steps: {max_steps}  |  Warmup: {warmup}"
     )
 
-    trainer = Trainer(model, loader, lr=3e-4, warmup_steps=warmup, max_steps=max_steps, device=DEVICE)
-    losses  = trainer.train(epochs=epochs, log_every=50, checkpoint_path=ckpt_path)
+    trainer = Trainer(
+        model, loader,
+        lr=3e-4, warmup_steps=warmup, max_steps=max_steps, device=DEVICE,
+        hf_repo=hf_repo, hf_token=hf_token,
+    )
+    losses  = trainer.train(epochs=epochs, log_every=50, checkpoint_path=ckpt_path, save_every=500)
     trainer.save(ckpt_path)
+    # Final push to HF Hub
+    if hf_repo and hf_token:
+        from training.trainer import _push_to_hub
+        _push_to_hub(ckpt_path, hf_repo, hf_token, step=-1)
     logger.info(f"Training complete ({size}). Final loss: {losses[-1]:.4f}")
 
 

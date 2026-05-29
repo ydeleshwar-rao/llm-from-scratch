@@ -2,12 +2,12 @@
 Training loop for the Transformer.
 
 Features:
-  - AdamW optimizer (standard for transformers)
-  - Gradient clipping to prevent exploding gradients
+  - AdamW optimizer
+  - Gradient clipping
   - Cosine LR schedule with warmup
-  - fp16 mixed precision (GPU memory half ho jaati hai)
-  - Gradient checkpointing (activation memory kam hoti hai)
-  - Optional checkpoint save/load
+  - fp16 mixed precision (GPU memory half)
+  - Gradient checkpointing (activation memory kam)
+  - HuggingFace Hub auto-push every N steps (session expire safe)
 """
 
 import logging
@@ -25,26 +25,46 @@ from .scheduler import CosineWithWarmup
 logger = logging.getLogger(__name__)
 
 
+def _push_to_hub(local_path: str, hf_repo: str, hf_token: str, step: int):
+    """Push checkpoint file to HuggingFace Hub."""
+    try:
+        from huggingface_hub import HfApi
+        api = HfApi()
+        api.upload_file(
+            path_or_fileobj=local_path,
+            path_in_repo="model.pt",
+            repo_id=hf_repo,
+            repo_type="model",
+            token=hf_token,
+            commit_message=f"checkpoint step={step}",
+        )
+        logger.info(f"  ↳ HuggingFace Hub pe push kiya → {hf_repo}  (step {step})")
+    except Exception as e:
+        logger.warning(f"  HF Hub push failed: {e}")
+
+
 class Trainer:
     def __init__(
         self,
         model: Transformer,
         train_loader: DataLoader,
-        lr: float           = 3e-4,
-        warmup_steps: int   = 100,
-        max_steps: int      = 1000,
-        grad_clip: float    = 1.0,
-        device: str         = "cpu",
-        fp16: bool          = True,    # mixed precision (GPU only)
-        grad_checkpoint: bool = True,  # gradient checkpointing (saves activation memory)
+        lr: float             = 3e-4,
+        warmup_steps: int     = 100,
+        max_steps: int        = 1000,
+        grad_clip: float      = 1.0,
+        device: str           = "cpu",
+        fp16: bool            = True,
+        grad_checkpoint: bool = True,
+        hf_repo: str          = None,   # "username/model-name" — HF Hub repo
+        hf_token: str         = None,   # HuggingFace API token
     ):
-        self.device    = device
-        self.grad_clip = grad_clip
+        self.device       = device
+        self.grad_clip    = grad_clip
         self.train_loader = train_loader
-        self.use_fp16  = fp16 and device == "cuda"
+        self.use_fp16     = fp16 and device == "cuda"
+        self.hf_repo      = hf_repo
+        self.hf_token     = hf_token
 
-        # Gradient checkpointing — activations recompute during backward
-        # Saves ~3-4x activation memory, ~20% slower but fits larger models
         if grad_checkpoint and device == "cuda":
             for block in model.blocks:
                 block.use_checkpoint = True
@@ -58,10 +78,12 @@ class Trainer:
         self.scheduler = CosineWithWarmup(self.optimizer, warmup_steps, max_steps)
         self.criterion = nn.CrossEntropyLoss(ignore_index=-1)
 
-        # fp16 scaler — prevents underflow during mixed precision training
         self.scaler = GradScaler() if self.use_fp16 else None
         if self.use_fp16:
-            logger.info("Mixed precision (fp16): ON  — GPU memory ~50% kam hogi")
+            logger.info("Mixed precision (fp16): ON")
+
+        if hf_repo:
+            logger.info(f"HF Hub auto-save: ON → {hf_repo}")
 
     # ── Single gradient step ──────────────────────────────────────────────────
     def train_step(self, x: torch.Tensor, y: torch.Tensor) -> float:
@@ -115,9 +137,13 @@ class Trainer:
                         f"step={step:5d}  loss={loss:.4f}  lr={self.scheduler.current_lr:.2e}"
                     )
 
+                # Save locally every save_every steps
                 if checkpoint_path and step % save_every == 0:
                     self.save(checkpoint_path)
                     logger.info(f"  ↳ checkpoint saved at step {step}")
+                    # Push to HF Hub if configured
+                    if self.hf_repo and self.hf_token:
+                        _push_to_hub(checkpoint_path, self.hf_repo, self.hf_token, step)
 
             avg = epoch_loss / max(len(self.train_loader), 1)
             logger.info(f"── Epoch {epoch}/{epochs}  avg_loss={avg:.4f}")
@@ -126,6 +152,8 @@ class Trainer:
                 best_loss = avg
                 self.save(checkpoint_path)
                 logger.info(f"  ↳ best checkpoint saved (avg_loss={avg:.4f})")
+                if self.hf_repo and self.hf_token:
+                    _push_to_hub(checkpoint_path, self.hf_repo, self.hf_token, step)
 
         return losses
 
