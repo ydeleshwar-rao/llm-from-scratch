@@ -168,6 +168,11 @@ def _load_hf_texts(dataset_name: str, max_samples: int = 10_000) -> list[str]:
         "medical_qa":           ("medalpaca/medical_meadow_wikidoc_patient_information",      "train", "output",      {},                              30),
         # ── Non-violent / prosocial behaviour ─────────────────────────────────
         "prosocial":            ("allenai/prosocial-dialog",                                  "train", "response",    {},                              20),
+        # ── Spelling / typo correction ─────────────────────────────────────────
+        "spell_correction":     ("torinriley/spell-correction",                               "train", "correct",     {},                               5),
+        "grammar_correction":   ("agentlans/grammar-correction",                              "train", "output",      {},                              10),
+        "noisy_english":        ("stanfordnlp/sentiment140",                                  "train", "text",        {},                              20),
+        "medit":                ("grammarly/medit",                                           "train", "tgt",         {},                              10),
         # ── Conversation / dialogue ────────────────────────────────────────────
         "daily_dialog":         None,   # special: multi-turn dialogue → flattened
         "empathetic_dialogues": None,   # special: emotion-aware dialogue
@@ -180,6 +185,7 @@ def _load_hf_texts(dataset_name: str, max_samples: int = 10_000) -> list[str]:
         "human-mix":            None,   # emotion + social + customer + sales + daily_dialog
         "hindi-mix":            None,   # hindi + wikitext2 + daily_dialog
         "safety-mix":           None,   # hate_speech + sexual_health + prosocial + empathetic
+        "spelling-mix":         None,   # spell_correction + grammar_correction + noisy_english
         "complete-mix":         None,   # sab kuch ek saath
     }
 
@@ -316,21 +322,39 @@ def _load_hf_texts(dataset_name: str, max_samples: int = 10_000) -> list[str]:
         logger.info(f"safety-mix total: {len(texts):,} texts")
         return texts
 
+    if dataset_name == "spelling-mix":
+        import random
+        logger.info("Loading spelling-mix (spell_correction + grammar_correction + noisy_english + medit)…")
+        texts = []
+        per = max_samples // 4
+        for src in ("spell_correction", "grammar_correction", "noisy_english", "medit"):
+            try:
+                t = _load_hf_texts(src, max_samples=per)
+                texts.extend(t)
+                logger.info(f"  {src}: {len(t):,}")
+            except Exception as e:
+                logger.warning(f"  {src} failed ({e}), skipping")
+        random.shuffle(texts)
+        logger.info(f"spelling-mix total: {len(texts):,} texts")
+        return texts
+
     if dataset_name == "complete-mix":
         import random
-        logger.info("Loading complete-mix (sab kuch — grammar + human + safety + hindi)…")
+        logger.info("Loading complete-mix (grammar + human + safety + spelling + hindi)…")
         texts = []
         sources = [
-            ("wikitext103",       max_samples // 8),
-            ("emotion",           max_samples // 8),
-            ("social_iqa",        max_samples // 8),
-            ("customer_support",  max_samples // 8),
-            ("sales",             max_samples // 8),
-            ("daily_dialog",      max_samples // 8),
-            ("hate_speech",       max_samples // 10),
-            ("sexual_health",     max_samples // 10),
-            ("prosocial",         max_samples // 10),
-            ("hindi",             max_samples // 10),
+            ("wikitext103",        max_samples // 10),
+            ("emotion",            max_samples // 10),
+            ("social_iqa",         max_samples // 10),
+            ("customer_support",   max_samples // 10),
+            ("sales",              max_samples // 10),
+            ("daily_dialog",       max_samples // 10),
+            ("hate_speech",        max_samples // 12),
+            ("sexual_health",      max_samples // 12),
+            ("prosocial",          max_samples // 12),
+            ("hindi",              max_samples // 12),
+            ("spell_correction",   max_samples // 12),
+            ("grammar_correction", max_samples // 12),
         ]
         for src, n in sources:
             try:
