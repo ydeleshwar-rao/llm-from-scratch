@@ -16,7 +16,7 @@ from typing import List, Optional
 
 import torch
 import torch.nn as nn
-from torch.cuda.amp import GradScaler, autocast
+from torch.amp import GradScaler, autocast
 from torch.utils.data import DataLoader
 
 from model.transformer import Transformer
@@ -78,7 +78,7 @@ class Trainer:
         self.scheduler = CosineWithWarmup(self.optimizer, warmup_steps, max_steps)
         self.criterion = nn.CrossEntropyLoss(ignore_index=-1)
 
-        self.scaler = GradScaler() if self.use_fp16 else None
+        self.scaler = GradScaler("cuda") if self.use_fp16 else None
         if self.use_fp16:
             logger.info("Mixed precision (fp16): ON")
 
@@ -91,7 +91,7 @@ class Trainer:
         self.optimizer.zero_grad()
 
         if self.use_fp16:
-            with autocast():
+            with autocast("cuda"):
                 logits, _ = self.model(x)
                 loss = self.criterion(logits.view(-1, logits.size(-1)), y.view(-1))
             self.scaler.scale(loss).backward()
