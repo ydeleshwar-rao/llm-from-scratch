@@ -155,9 +155,17 @@ class Trainer:
                 step += 1
 
                 if step % log_every == 0:
-                    logger.info(
-                        f"step={step:5d}  loss={loss:.4f}  lr={self.scheduler.current_lr:.2e}"
-                    )
+                    if self.device == "cuda":
+                        used = torch.cuda.memory_allocated() / 1e9
+                        total = torch.cuda.get_device_properties(0).total_memory / 1e9
+                        logger.info(
+                            f"step={step:5d}  loss={loss:.4f}  lr={self.scheduler.current_lr:.2e}"
+                            f"  GPU={used:.1f}/{total:.1f}GB"
+                        )
+                    else:
+                        logger.info(
+                            f"step={step:5d}  loss={loss:.4f}  lr={self.scheduler.current_lr:.2e}"
+                        )
 
                 # Save locally every save_every steps
                 if checkpoint_path and step % save_every == 0:
