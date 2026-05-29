@@ -26,10 +26,18 @@ logger = logging.getLogger(__name__)
 
 
 def _push_to_hub(local_path: str, hf_repo: str, hf_token: str, step: int):
-    """Push checkpoint file to HuggingFace Hub."""
+    """Push checkpoint file to HuggingFace Hub. Auto-creates repo if missing."""
     try:
         from huggingface_hub import HfApi
         api = HfApi()
+        # Auto-create repo if it doesn't exist
+        api.create_repo(
+            repo_id=hf_repo,
+            repo_type="model",
+            token=hf_token,
+            exist_ok=True,   # no error if already exists
+            private=False,
+        )
         api.upload_file(
             path_or_fileobj=local_path,
             path_in_repo="model.pt",
