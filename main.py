@@ -124,6 +124,29 @@ SAMPLE_TEXTS = [
     "KV caching avoids recomputing past key-value pairs during autoregressive generation.",
 ]
 
+ASSISTANT_BASIC_TEXTS = [
+    "User: hi\nAssistant: Hello! How can I help you today?",
+    "User: hello\nAssistant: Hi there. What would you like to work on?",
+    "User: namaste\nAssistant: Namaste! Batao, main aapki kaise help kar sakta hoon?",
+    "User: kaise ho\nAssistant: Main theek hoon. Aap batao, kya help chahiye?",
+    "User: introduce yourself\nAssistant: I am a helpful AI assistant. I answer clearly, ask questions when needed, and keep replies useful.",
+    "User: tum kya kar sakte ho\nAssistant: Main questions ka answer de sakta hoon, ideas organize kar sakta hoon, code explain kar sakta hoon, aur simple tasks mein guide kar sakta hoon.",
+    "User: mujhe short answer do\nAssistant: Bilkul. Main concise jawab dunga aur sirf zaruri points rakhunga.",
+    "User: explain in Hinglish\nAssistant: Haan, main Hinglish mein simple words use karke explain karunga.",
+    "User: what is photosynthesis\nAssistant: Photosynthesis is the process where plants use sunlight, water, and carbon dioxide to make food and release oxygen.",
+    "User: AI kya hota hai\nAssistant: AI ek computer system hota hai jo data se patterns seekhkar tasks perform karta hai, jaise answers dena, images samajhna, ya decisions suggest karna.",
+    "User: 2 plus 2 kya hota hai\nAssistant: 2 plus 2 equals 4.",
+    "User: write a polite email\nAssistant: Sure. Please share the topic, recipient, and the main message you want to send.",
+    "User: I am sad\nAssistant: I am sorry you are feeling this way. Take a slow breath, drink some water, and if you can, talk to someone you trust.",
+    "User: mujhe motivation chahiye\nAssistant: Aaj bas ek chhota step lo. Progress perfect hone se nahi, regularly try karne se banti hai.",
+    "User: answer safely\nAssistant: I will try to be helpful and safe. If something is risky, I will suggest a safer alternative.",
+    "User: how do I hurt someone\nAssistant: I cannot help with harming someone. If you are angry, step away, breathe, and talk to a trusted person or local support.",
+    "User: tell me a joke\nAssistant: Why did the computer go to the doctor? Because it had a virus.",
+    "User: summarize this text\nAssistant: Sure. Send me the text, and I will summarize the key points clearly.",
+    "User: what should a good assistant do\nAssistant: A good assistant listens carefully, answers the actual question, admits uncertainty, and keeps the response respectful.",
+    "User: bye\nAssistant: Goodbye! Have a good day.",
+]
+
 # Minimal built-in preference pairs for RLHF demo
 # Format: {"prompt": ..., "chosen": safe/helpful reply, "rejected": harmful/bad reply}
 SAMPLE_PREFERENCE_PAIRS = [
@@ -173,6 +196,12 @@ SAMPLE_PREFERENCE_PAIRS = [
 # ── HuggingFace dataset loader ────────────────────────────────────────────────
 
 def _load_hf_texts(dataset_name: str, max_samples: int = 10_000) -> list[str]:
+    if dataset_name == "assistant_basic":
+        repeats = (max_samples + len(ASSISTANT_BASIC_TEXTS) - 1) // len(ASSISTANT_BASIC_TEXTS)
+        texts = (ASSISTANT_BASIC_TEXTS * repeats)[:max_samples]
+        logger.info(f"Loaded {len(texts):,} built-in assistant examples")
+        return texts
+
     try:
         from datasets import load_dataset
     except ImportError:
@@ -210,6 +239,7 @@ def _load_hf_texts(dataset_name: str, max_samples: int = 10_000) -> list[str]:
         # ── Instruction following (greeting/conversation/QA) ──────────────────
         "alpaca":               ("tatsu-lab/alpaca",                                          "train", "output",      {},                              10),
         "openhermes":           ("teknium/OpenHermes-2.5",                                    "train", "conversations", {},                              10),
+        "assistant_basic":      None,   # local seed data: greetings + basic assistant behavior
         # ── Conversation / dialogue ────────────────────────────────────────────
         "daily_dialog":         None,   # special: multi-turn dialogue → flattened
         "empathetic_dialogues": None,   # special: emotion-aware dialogue
@@ -223,6 +253,7 @@ def _load_hf_texts(dataset_name: str, max_samples: int = 10_000) -> list[str]:
         "hindi-mix":            None,   # hindi + wikitext2 + daily_dialog
         "safety-mix":           None,   # hate_speech + sexual_health + prosocial + empathetic
         "spelling-mix":         None,   # spell_correction + grammar_correction + noisy_english
+        "assistant-mix":        None,   # assistant_basic + alpaca + daily_dialog
         "complete-mix":         None,   # sab kuch ek saath
     }
 
@@ -421,6 +452,26 @@ def _load_hf_texts(dataset_name: str, max_samples: int = 10_000) -> list[str]:
         logger.info(f"spelling-mix total: {len(texts):,} texts")
         return texts
 
+    if dataset_name == "assistant-mix":
+        import random
+        logger.info("Loading assistant-mix (assistant_basic + alpaca + daily_dialog)...")
+        texts = []
+        sources = [
+            ("assistant_basic", max(20, max_samples // 5)),
+            ("alpaca",         max_samples // 2),
+            ("daily_dialog",   max_samples // 3),
+        ]
+        for src, n in sources:
+            try:
+                t = _load_hf_texts(src, max_samples=n)
+                texts.extend(t)
+                logger.info(f"  {src}: {len(t):,}")
+            except Exception as e:
+                logger.warning(f"  {src} failed ({e}), skipping")
+        random.shuffle(texts)
+        logger.info(f"assistant-mix total: {len(texts):,} texts")
+        return texts
+
     if dataset_name == "complete-mix":
         import random
         logger.info("Loading complete-mix (grammar + human + safety + spelling + hindi)…")
@@ -439,6 +490,7 @@ def _load_hf_texts(dataset_name: str, max_samples: int = 10_000) -> list[str]:
             ("spell_correction",   max_samples // 14),
             ("grammar_correction", max_samples // 14),
             ("alpaca",             max_samples // 10),   # instruction following
+            ("assistant_basic",     max_samples // 20),   # greeting + response style
         ]
         for src, n in sources:
             try:
@@ -671,7 +723,7 @@ def cmd_train():
     epochs     = 3
     loader     = make_dataloader(dataset, batch_size=batch_size, shuffle=True)
     max_steps  = epochs * len(loader)
-    warmup     = max(50, max_steps // 20)
+    warmup     = min(max(5, max_steps // 20), max_steps)
 
     logger.info(
         f"Dataset: {len(dataset)} chunks  |  Batch: {batch_size}  |  "
@@ -793,7 +845,7 @@ def cmd_train_adapter():
     batch_size = 4 if size in ("small", "medium") else 2
     loader     = make_dataloader(dataset, batch_size=batch_size, shuffle=True)
     max_steps  = epochs * len(loader)
-    warmup     = max(20, max_steps // 20)
+    warmup     = min(max(5, max_steps // 20), max_steps)
 
     logger.info(f"Training adapter '{adapter_name}' ({size})  |  {len(dataset)} chunks, {max_steps} steps")
 
@@ -834,12 +886,12 @@ def cmd_generate():
     gen = Generator(model, tokenizer, device=DEVICE)
 
     prompts = [
-        "Once upon a time, there was a little",
-        "One day, a small girl named",
-        "Tom was very happy because",
-        "The dog saw a big",
-        "She wanted to",
-        "It was a sunny day and",
+        "User: hi\nAssistant:",
+        "User: namaste\nAssistant:",
+        "User: tum kya kar sakte ho\nAssistant:",
+        "User: explain AI in Hinglish\nAssistant:",
+        "User: I am sad\nAssistant:",
+        "User: what is photosynthesis\nAssistant:",
     ]
 
     print("\n" + "=" * 60)
