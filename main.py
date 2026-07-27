@@ -239,6 +239,11 @@ def _load_hf_texts(dataset_name: str, max_samples: int = 10_000) -> list[str]:
         # ── Instruction following (greeting/conversation/QA) ──────────────────
         "alpaca":               ("tatsu-lab/alpaca",                                          "train", "output",      {},                              10),
         "openhermes":           ("teknium/OpenHermes-2.5",                                    "train", "conversations", {},                              10),
+        "alpaca_gpt4":          None,   # GPT-4 generated Alpaca-format instruction data
+        "dolly":                None,   # human-written Databricks Dolly instruction data
+        "oasst1":               None,   # OpenAssistant human chat trees
+        "hindi_alpaca_dolly":   None,   # Hindi translated Alpaca + Dolly instructions
+        "hinglish_alpaca_gpt4": None,   # Hindi/Hinglish GPT-4 Alpaca-format instructions
         "assistant_basic":      None,   # local seed data: greetings + basic assistant behavior
         # ── Conversation / dialogue ────────────────────────────────────────────
         "daily_dialog":         None,   # special: multi-turn dialogue → flattened
@@ -253,7 +258,8 @@ def _load_hf_texts(dataset_name: str, max_samples: int = 10_000) -> list[str]:
         "hindi-mix":            None,   # hindi + wikitext2 + daily_dialog
         "safety-mix":           None,   # hate_speech + sexual_health + prosocial + empathetic
         "spelling-mix":         None,   # spell_correction + grammar_correction + noisy_english
-        "assistant-mix":        None,   # assistant_basic + alpaca + daily_dialog
+        "assistant-mix":        None,   # clean assistant/instruction SFT mix
+        "clean-assistant-mix":  None,   # oasst1 + dolly + alpaca_gpt4 + Hindi/Hinglish SFT
         "complete-mix":         None,   # sab kuch ek saath
     }
 
@@ -367,6 +373,105 @@ def _load_hf_texts(dataset_name: str, max_samples: int = 10_000) -> list[str]:
         logger.info(f"Loaded {len(texts):,} instruction pairs from alpaca")
         return texts
 
+    if dataset_name == "alpaca_gpt4":
+        logger.info("Downloading Alpaca-GPT4 instruction dataset...")
+        ds = load_dataset("flwrlabs/alpaca-gpt4", split="train", streaming=True)
+        texts = []
+        for row in ds:
+            instruction = row.get("instruction", "").strip()
+            inp = row.get("input", "").strip()
+            output = row.get("output", "").strip()
+            if not instruction or not output:
+                continue
+            user = f"{instruction}\n{inp}".strip() if inp else instruction
+            text = f"User: {user}\nAssistant: {output}"
+            if len(text) >= 40:
+                texts.append(text)
+            if len(texts) >= max_samples:
+                break
+        logger.info(f"Loaded {len(texts):,} instruction pairs from alpaca_gpt4")
+        return texts
+
+    if dataset_name == "dolly":
+        logger.info("Downloading Databricks Dolly instruction dataset...")
+        ds = load_dataset("databricks/databricks-dolly-15k", split="train", streaming=True)
+        texts = []
+        for row in ds:
+            instruction = row.get("instruction", "").strip()
+            context = row.get("context", "").strip()
+            response = row.get("response", "").strip()
+            if not instruction or not response:
+                continue
+            user = f"{instruction}\n{context}".strip() if context else instruction
+            text = f"User: {user}\nAssistant: {response}"
+            if len(text) >= 40:
+                texts.append(text)
+            if len(texts) >= max_samples:
+                break
+        logger.info(f"Loaded {len(texts):,} instruction pairs from dolly")
+        return texts
+
+    if dataset_name == "hindi_alpaca_dolly":
+        logger.info("Downloading Hindi Alpaca-Dolly instruction dataset...")
+        ds = load_dataset("HydraIndicLM/hindi_alpaca_dolly_67k", split="train", streaming=True)
+        texts = []
+        for row in ds:
+            instruction = row.get("instruction", "").strip()
+            inp = row.get("input", "").strip()
+            output = row.get("output", "").strip()
+            if not instruction or not output:
+                continue
+            user = f"{instruction}\n{inp}".strip() if inp else instruction
+            text = f"User: {user}\nAssistant: {output}"
+            if len(text) >= 30:
+                texts.append(text)
+            if len(texts) >= max_samples:
+                break
+        logger.info(f"Loaded {len(texts):,} Hindi instruction pairs")
+        return texts
+
+    if dataset_name == "hinglish_alpaca_gpt4":
+        logger.info("Downloading Hindi/Hinglish Alpaca-GPT4 instruction dataset...")
+        ds = load_dataset("NebulaByte/alpaca-gpt4-hindi-hinglish", split="train", streaming=True)
+        texts = []
+        for row in ds:
+            user = (row.get("input_hinglish") or row.get("input") or "").strip()
+            output = (row.get("output_hinglish") or row.get("output") or "").strip()
+            if not user or not output:
+                continue
+            text = f"User: {user}\nAssistant: {output}"
+            if len(text) >= 30:
+                texts.append(text)
+            if len(texts) >= max_samples:
+                break
+        logger.info(f"Loaded {len(texts):,} Hinglish instruction pairs")
+        return texts
+
+    if dataset_name == "oasst1":
+        logger.info("Downloading OpenAssistant OASST1 conversations...")
+        ds = load_dataset("OpenAssistant/oasst1", split="train", streaming=True)
+        pending_prompts = {}
+        texts = []
+        for row in ds:
+            if row.get("deleted") or row.get("review_result") is False:
+                continue
+            msg_id = row.get("message_id", "")
+            parent_id = row.get("parent_id", "")
+            role = row.get("role", "")
+            text = row.get("text", "").strip()
+            if not msg_id or not text:
+                continue
+            if role == "prompter":
+                pending_prompts[msg_id] = text
+            elif role == "assistant" and parent_id in pending_prompts:
+                pair = f"User: {pending_prompts[parent_id]}\nAssistant: {text}"
+                if len(pair) >= 40:
+                    texts.append(pair)
+                if len(texts) >= max_samples:
+                    break
+        logger.info(f"Loaded {len(texts):,} OpenAssistant prompt/reply pairs")
+        return texts
+
     if dataset_name == "openhermes":
         logger.info("Downloading OpenHermes conversations…")
         ds = load_dataset("teknium/OpenHermes-2.5", split="train", streaming=True)
@@ -454,12 +559,15 @@ def _load_hf_texts(dataset_name: str, max_samples: int = 10_000) -> list[str]:
 
     if dataset_name == "assistant-mix":
         import random
-        logger.info("Loading assistant-mix (assistant_basic + alpaca + daily_dialog)...")
+        logger.info("Loading assistant-mix (clean assistant/instruction datasets)...")
         texts = []
         sources = [
-            ("assistant_basic", max(20, max_samples // 5)),
-            ("alpaca",         max_samples // 2),
-            ("daily_dialog",   max_samples // 3),
+            ("oasst1",                 max_samples // 4),
+            ("alpaca_gpt4",            max_samples // 4),
+            ("hindi_alpaca_dolly",     max_samples // 4),
+            ("hinglish_alpaca_gpt4",   max_samples // 5),
+            ("dolly",                  max_samples // 10),
+            ("assistant_basic",        max(200, max_samples // 50)),
         ]
         for src, n in sources:
             try:
@@ -472,25 +580,22 @@ def _load_hf_texts(dataset_name: str, max_samples: int = 10_000) -> list[str]:
         logger.info(f"assistant-mix total: {len(texts):,} texts")
         return texts
 
+    if dataset_name == "clean-assistant-mix":
+        return _load_hf_texts("assistant-mix", max_samples=max_samples)
+
     if dataset_name == "complete-mix":
         import random
-        logger.info("Loading complete-mix (grammar + human + safety + spelling + hindi)…")
+        logger.info("Loading complete-mix (clean assistant + grammar + safety)...")
         texts = []
         sources = [
-            ("wikitext103",        max_samples // 10),
-            ("emotion",            max_samples // 10),
-            ("social_iqa",         max_samples // 10),
-            ("customer_support",   max_samples // 10),
-            ("sales",              max_samples // 10),
-            ("daily_dialog",       max_samples // 10),
-            ("hate_speech",        max_samples // 12),
-            ("sexual_health",      max_samples // 12),
-            ("prosocial",          max_samples // 12),
-            ("hindi",              max_samples // 12),
-            ("spell_correction",   max_samples // 14),
-            ("grammar_correction", max_samples // 14),
-            ("alpaca",             max_samples // 10),   # instruction following
-            ("assistant_basic",     max_samples // 20),   # greeting + response style
+            ("oasst1",                 max_samples // 5),
+            ("alpaca_gpt4",            max_samples // 5),
+            ("hindi_alpaca_dolly",     max_samples // 5),
+            ("hinglish_alpaca_gpt4",   max_samples // 5),
+            ("dolly",                  max_samples // 10),
+            ("wikitext2",              max_samples // 20),
+            ("prosocial",              max_samples // 20),
+            ("assistant_basic",        max(200, max_samples // 100)),
         ]
         for src, n in sources:
             try:
